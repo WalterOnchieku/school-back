@@ -32,6 +32,7 @@ class User(db.Model, UserMixin, SerializerMixin):
 #=================================================================================================
 # Student Model
 #=================================================================================================
+
 class Student(db.Model, SerializerMixin):
     __tablename__ = "students"
     id = db.Column(db.Integer, primary_key=True)
@@ -42,11 +43,13 @@ class Student(db.Model, SerializerMixin):
     class_id = db.Column(db.Integer, db.ForeignKey("classes.id"), nullable=False)
     nemis_no = db.Column(db.Integer, nullable=True)
     assessment_no = db.Column(db.Integer, nullable=True)
+    pickup_location_id = db.Column(db.Integer, db.ForeignKey('pickup_locations.id'), nullable=True)
 
     # Relationships
     student_class = db.relationship("Class", back_populates="students")
     scores = db.relationship("ScoreGrade", back_populates="student", cascade="all, delete-orphan")
     fee_payments = db.relationship("FeePayment", back_populates="student", cascade="all, delete-orphan")
+    pickup_location = db.relationship('PickupLocation', backref='students')
 
     def serialize(self):
         return {
@@ -58,11 +61,13 @@ class Student(db.Model, SerializerMixin):
             "class_id": self.class_id,
             "nemis_no": self.nemis_no,
             "assessment_no": self.assessment_no,
+            "pickup_location_id": self.pickup_location_id,
             "scores": [score.serialize() for score in self.scores],
         }
 
     def __repr__(self):
         return f"<Student(id={self.id}, name={self.name})>"
+
 
 #=================================================================================================
 # Teacher Model
@@ -213,64 +218,92 @@ class ScoreGrade(db.Model):
         )
 
 
-class FeeStructure(db.Model, SerializerMixin):
+class FeeStructure(db.Model, SerializerMixin): 
     __tablename__ = "fee_structures"
 
     id = db.Column(db.Integer, primary_key=True)
-    class_id = db.Column(db.Integer, db.ForeignKey("classes.id"), nullable=False)
+    class_id = db.Column(db.Integer, db.ForeignKey('classes.id'), nullable=False)
     tuition_fee = db.Column(db.Float, nullable=False, default=0.0)
-    transport_fee = db.Column(db.Float, nullable=False, default=0.0)
     books_fee = db.Column(db.Float, nullable=False, default=0.0)
     miscellaneous_fee = db.Column(db.Float, nullable=False, default=0.0)
+    boarding_fee = db.Column(db.Float, nullable=True, default=0.0)
+    prize_giving_fee = db.Column(db.Float, nullable=True, default=0.0)
+    exam_fee = db.Column(db.Float, nullable=True, default=0.0)
+    total_fee = db.Column(db.Float, nullable=False, default=0.0)  # New column for total fee
 
     # Relationships
     class_ = db.relationship("Class", back_populates="fee_structure")
 
-    def serialize(self):
+    def serialize_with_class(self):
         return {
             "id": self.id,
             "class_id": self.class_id,
-            "class_name": self.class_.name if self.class_ else None,
+            "class_details": {
+                "id": self.class_.id,
+                "class_name": self.class_.class_name
+            } if self.class_ else None,
             "tuition_fee": self.tuition_fee,
-            "transport_fee": self.transport_fee,
             "books_fee": self.books_fee,
             "miscellaneous_fee": self.miscellaneous_fee,
-            "total_fee": self.tuition_fee + self.transport_fee + self.books_fee + self.miscellaneous_fee,
+            "boarding_fee": self.boarding_fee,
+            "prize_giving_fee": self.prize_giving_fee,
+            "exam_fee": self.exam_fee,
+            "total_fee": self.total_fee,
         }
 
     def __repr__(self):
         return (
-            f"<FeeStructure(id={self.id}, class_id={self.class_id}, "
-            f"tuition_fee={self.tuition_fee}, transport_fee={self.transport_fee}, "
-            f"books_fee={self.books_fee}, miscellaneous_fee={self.miscellaneous_fee})>"
+            f"<FeeStructure(id={self.id}, class_id={self.class_id}, tuition_fee={self.tuition_fee}, "
+            f"books_fee={self.books_fee}, miscellaneous_fee={self.miscellaneous_fee}, total_fee={self.total_fee})>"
         )
+    
+
+class PickupLocation(db.Model, SerializerMixin):
+    __tablename__ = "pickup_locations"
+
+    id = db.Column(db.Integer, primary_key=True)
+    location_name = db.Column(db.String(255), nullable=False)
+    transport_fee = db.Column(db.Float, nullable=False, default=0.0)
+
+    # Relationship
+    # fee_structures = db.relationship('FeeStructure', back_populates='pickup_location')
+
+    def serialize(self):
+        return {
+            "id": self.id,
+            "location_name": self.location_name,
+            "transport_fee": self.transport_fee,
+        }
+
+    def __repr__(self):
+        return f"<PickupLocation(id={self.id}, location_name={self.location_name}, transport_fee={self.transport_fee})>"
+
 
 class FeePayment(db.Model, SerializerMixin):
     __tablename__ = "fee_payments"
-
     id = db.Column(db.Integer, primary_key=True)
     student_id = db.Column(db.Integer, db.ForeignKey("students.id"), nullable=False)
-    date_of_payment = db.Column(db.Date, nullable=False, default=datetime.utcnow)
-    amount_paid = db.Column(db.Float, nullable=False)
-    payment_method = db.Column(db.String, nullable=False)
-    transaction_id = db.Column(db.String, nullable=True)
+    amount = db.Column(db.Float, nullable=False)
+    payment_date = db.Column(db.Date, nullable=False)
+    term = db.Column(db.String, nullable=False)
+    year = db.Column(db.Integer, nullable=False)
+    method = db.Column(db.String, nullable=False)
+    balance = db.Column(db.Float, nullable=False)
 
-    # Relationships
+    # Relationship
     student = db.relationship("Student", back_populates="fee_payments")
 
     def serialize(self):
         return {
             "id": self.id,
             "student_id": self.student_id,
-            "student_name": f"{self.student.first_name} {self.student.last_name}" if self.student else None,
-            "date_of_payment": self.date_of_payment.strftime("%Y-%m-%d") if self.date_of_payment else None,
-            "amount_paid": self.amount_paid,
-            "payment_method": self.payment_method,
-            "transaction_id": self.transaction_id,
+            "amount": self.amount,
+            "payment_date": self.payment_date.strftime("%Y-%m-%d") if self.payment_date else None,
+            "term": self.term,
+            "year": self.year,
+            "method": self.method,
+            "balance": self.balance,
         }
 
     def __repr__(self):
-        return (
-            f"<FeePayment(id={self.id}, student_id={self.student_id}, "
-            f"amount_paid={self.amount_paid}, payment_method={self.payment_method})>"
-        )
+        return f"<FeePayment(id={self.id}, student_id={self.student_id}, amount={self.amount})>"

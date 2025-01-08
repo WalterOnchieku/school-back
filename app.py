@@ -2,17 +2,18 @@ from flask import Flask, request, make_response
 from flask_migrate import Migrate
 from flask_login import LoginManager
 from flask_restful import Resource, Api, reqparse
-from models import db, User, Student, Teacher, Class, Subject, ScoreGrade, Test
+from models import db, User, Student, Teacher, Class, Subject, ScoreGrade, FeeStructure, FeePayment, PickupLocation
 from datetime import datetime, timedelta
 from flask_cors import CORS
 from auth import Register, Login, Logout, ProtectedResource
 from flask_session import Session
 from sqlalchemy import func
+from sqlalchemy.sql import func
+from sqlalchemy.orm import joinedload
 
 
 # Initialize Flask app
 app = Flask(__name__)
-
 
 
 # Configurations
@@ -62,7 +63,8 @@ class StudentListResource(Resource):
                 Student.class_id,
                 Class.class_name,  # Include class_name from the Class model
                 Student.nemis_no,
-                Student.assessment_no
+                Student.assessment_no,
+                Student.pickup_location_id
             )
             .join(Class, Student.class_id == Class.id)  # Join on class_id
             .paginate(page=page, per_page=per_page)
@@ -81,6 +83,7 @@ class StudentListResource(Resource):
                     "class_name": student.class_name,  # Include class_name in response
                     "nemis_no": student.nemis_no,
                     "assessment_no": student.assessment_no,
+                    "pickup_location_id": student.pickup_location_id,
                 }
                 for student in students.items
             ],
@@ -135,6 +138,7 @@ class StudentResource(Resource):
             student.class_id = data.get("class_id", student.class_id)
             student.nemis_no = data.get("nemis_no", student.nemis_no)
             student.assessment_no = data.get("assessment_no", student.assessment_no)
+            student.pickup_location_id = data.get("pickup_location_id", student.pickup_location_id)
             
             db.session.commit()
             return student.serialize(), 200
@@ -162,11 +166,6 @@ api.add_resource(StudentResource, "/students/<int:student_id>")
 #=================================================================================================
 # Teacher endpoints
 #=================================================================================================
-from sqlalchemy.orm import joinedload
-from flask import request
-from flask_restful import Resource
-from datetime import datetime
-from models import Teacher, Subject, db
 
 class TeacherListResource(Resource):
     def get(self):
@@ -276,7 +275,6 @@ class TeacherResource(Resource):
 api.add_resource(TeacherListResource, "/teachers")
 api.add_resource(TeacherResource, "/teachers/<int:teacher_id>")
 
-
 #=================================================================================================
 # Class endpoints
 #=================================================================================================
@@ -343,7 +341,6 @@ class ClassResource(Resource):
         except Exception as e:
             db.session.rollback()
             return make_response({"error": str(e)}, 400)
-
 
 
 # Registering resources
@@ -706,7 +703,332 @@ api.add_resource(Login, '/auth/login')
 api.add_resource(Logout, '/auth/logout')
 api.add_resource(ProtectedResource, "/protected")
 
+#=================================================================================================
+# FeeStructure endpoints
+#=================================================================================================
 
+from flask import request, make_response
+from flask_restful import Resource
+from sqlalchemy.orm import joinedload
+from models import FeeStructure, Class, db
+
+class FeeStructureResource(Resource):
+    @staticmethod
+    def calculate_total_fee(data):
+        return sum([
+            float(data.get("tuition_fee", 0.0)),
+            float(data.get("books_fee", 0.0)),
+            float(data.get("miscellaneous_fee", 0.0)),
+            float(data.get("boarding_fee", 0.0)),
+            float(data.get("prize_giving_fee", 0.0)),
+            float(data.get("exam_fee", 0.0)),
+        ])
+
+    def get(self, fee_structure_id=None):
+        if fee_structure_id:
+            fee_structure = (
+                FeeStructure.query.options(
+                    joinedload(FeeStructure.class_)
+                )
+                .filter_by(id=fee_structure_id)
+                .first()
+            )
+            if not fee_structure:
+                return make_response({"message": "Fee structure not found"}, 404)
+            return make_response(fee_structure.serialize_with_class(), 200)
+
+        fee_structures = FeeStructure.query.options(
+            joinedload(FeeStructure.class_)
+        ).all()
+        return make_response(
+            [fee_structure.serialize_with_class() for fee_structure in fee_structures], 200
+        )
+
+    def post(self):
+        data = request.get_json()
+    
+        total_fee = self.calculate_total_fee(data)
+
+        fee_structure = FeeStructure(
+            class_id=data.get("class_id"),
+            tuition_fee=float(data.get("tuition_fee", 0.0)),
+            books_fee=float(data.get("books_fee", 0.0)),
+            miscellaneous_fee=float(data.get("miscellaneous_fee", 0.0)),
+            boarding_fee=float(data.get("boarding_fee", 0.0)),
+            prize_giving_fee=float(data.get("prize_giving_fee", 0.0)),
+            exam_fee=float(data.get("exam_fee", 0.0)),
+            total_fee=total_fee,
+        )
+
+        db.session.add(fee_structure)
+        db.session.commit()
+        return make_response(
+        {"message": "Fee structure created", "fee_structure": fee_structure.serialize_with_class()}, 201
+    )
+
+    def put(self, fee_structure_id):
+        fee_structure = FeeStructure.query.get(fee_structure_id)
+        if not fee_structure:
+            return make_response({"message": "Fee structure not found"}, 404)
+
+        data = request.get_json()
+
+        # Update fields
+        fee_structure.class_id = data.get("class_id", fee_structure.class_id)
+        fee_structure.tuition_fee = data.get("tuition_fee", fee_structure.tuition_fee)
+        fee_structure.books_fee = data.get("books_fee", fee_structure.books_fee)
+        fee_structure.miscellaneous_fee = data.get("miscellaneous_fee", fee_structure.miscellaneous_fee)
+        fee_structure.boarding_fee = data.get("boarding_fee", fee_structure.boarding_fee)
+        fee_structure.prize_giving_fee = data.get("prize_giving_fee", fee_structure.prize_giving_fee)
+        fee_structure.exam_fee = data.get("exam_fee", fee_structure.exam_fee)
+
+        # Recalculate total fee after updates
+        updated_data = {
+            "tuition_fee": fee_structure.tuition_fee,
+            "books_fee": fee_structure.books_fee,
+            "miscellaneous_fee": fee_structure.miscellaneous_fee,
+            "boarding_fee": fee_structure.boarding_fee,
+            "prize_giving_fee": fee_structure.prize_giving_fee,
+            "exam_fee": fee_structure.exam_fee,
+        }
+        fee_structure.total_fee = self.calculate_total_fee(updated_data)
+
+        db.session.commit()
+        return make_response(
+            {"message": "Fee structure updated", "fee_structure": fee_structure.serialize_with_class()}, 200
+        )
+
+    def delete(self, fee_structure_id):
+        fee_structure = FeeStructure.query.get(fee_structure_id)
+        if not fee_structure:
+            return make_response({"message": "Fee structure not found"}, 404)
+
+        db.session.delete(fee_structure)
+        db.session.commit()
+        return make_response({"message": "Fee structure deleted"}, 200)
+
+
+api.add_resource(FeeStructureResource, "/fee-structure", "/fee-structure/<int:fee_structure_id>")
+
+#=================================================================================================
+# Pickup Location endpoints
+#=================================================================================================
+
+class PickupLocationResource(Resource):
+    def get(self, location_id=None):
+        if location_id:
+            location = PickupLocation.query.get(location_id)
+            if not location:
+                return {"message": "Pickup location not found"}, 404
+            return location.serialize(), 200
+
+        locations = PickupLocation.query.all()
+        return [location.serialize() for location in locations], 200
+
+    def post(self):
+        data = request.get_json()
+        location = PickupLocation(
+            location_name=data.get("location_name"),
+            transport_fee=data.get("transport_fee", 0.0),
+        )
+        db.session.add(location)
+        db.session.commit()
+        return {"message": "Pickup location created", "location": location.serialize()}, 201
+
+    def put(self, location_id):
+        location = PickupLocation.query.get(location_id)
+        if not location:
+            return {"message": "Pickup location not found"}, 404
+        data = request.get_json()
+        location.location_name = data.get("location_name", location.location_name)
+        location.transport_fee = data.get("transport_fee", location.transport_fee)
+        db.session.commit()
+        return {"message": "Pickup location updated", "location": location.serialize()}, 200
+
+    def delete(self, location_id):
+        location = PickupLocation.query.get(location_id)
+        if not location:
+            return {"message": "Pickup location not found"}, 404
+        db.session.delete(location)
+        db.session.commit()
+        return {"message": "Pickup location deleted"}, 200
+
+api.add_resource(PickupLocationResource, "/pickup-location", "/pickup-location/<int:location_id>")
+
+
+#=================================================================================================
+#  Fee Payment endpoints
+#=================================================================================================
+
+from flask import request
+from flask_restful import Resource
+from sqlalchemy import func
+from datetime import datetime
+from models import db, FeePayment, FeeStructure, PickupLocation, Student
+
+
+class FeePaymentResource(Resource):
+
+    def calculate_grand_total(self, student):
+        """
+        Calculate the grand total for a student, including transport fee if applicable.
+        """
+        # Get the student's fee structure
+        fee_structure = FeeStructure.query.filter_by(class_id=student.class_id).first()
+        if not fee_structure:
+            raise ValueError("Fee structure not found for the student's class.")
+
+        # Base fees
+        grand_total = (
+            fee_structure.tuition_fee +
+            fee_structure.books_fee +
+            fee_structure.miscellaneous_fee +
+            fee_structure.boarding_fee +
+            fee_structure.prize_giving_fee +
+            fee_structure.exam_fee
+        )
+
+        # Add transport fee if a pickup location is assigned
+        if student.pickup_location_id:
+            pickup_location = PickupLocation.query.get(student.pickup_location_id)
+            if pickup_location:
+                grand_total += pickup_location.transport_fee
+
+        return grand_total
+
+    def calculate_balance(self, student, new_payment_amount):
+        """
+        Calculate the remaining balance after a payment is made.
+        """
+        # Get the grand total
+        grand_total = self.calculate_grand_total(student)
+
+        # Total amount paid so far
+        total_paid = db.session.query(func.sum(FeePayment.amount)).filter_by(student_id=student.id).scalar() or 0
+
+        # Include the new payment
+        new_total_paid = float(total_paid) + float(new_payment_amount)
+
+        # Calculate the balance
+        return grand_total - new_total_paid
+
+    def get(self, fee_payment_id=None):
+        if fee_payment_id:
+            # Fetch a specific fee payment by ID
+            fee_payment = FeePayment.query.get(fee_payment_id)
+            if not fee_payment:
+                return {"message": "Fee payment not found"}, 404
+
+            # Serialize the fee payment
+            return fee_payment.serialize(), 200
+
+        # Pagination and filtering logic
+        page = request.args.get('page', type=int, default=1)
+        per_page = request.args.get('per_page', type=int, default=10)
+        student_id = request.args.get('student_id', type=int)
+        term = request.args.get('term')
+        year = request.args.get('year', type=int)
+
+        query = FeePayment.query
+        if student_id:
+            query = query.filter(FeePayment.student_id == student_id)
+        if term:
+            query = query.filter(FeePayment.term == term)
+        if year:
+            query = query.filter(FeePayment.year == year)
+
+        # Paginate the results
+        fee_payments = query.paginate(page=page, per_page=per_page, error_out=False)
+
+        # Serialize all fee payment records
+        payments_with_balance = [payment.serialize() for payment in fee_payments.items]
+
+        # Return the response
+        return {
+            "fee_payments": payments_with_balance,
+            "total": fee_payments.total,
+            "pages": fee_payments.pages,
+            "current_page": fee_payments.page
+        }, 200
+
+    def post(self):
+        data = request.get_json()
+
+        # Validate Student
+        student = Student.query.get(data.get("student_id"))
+        if not student:
+            return {"message": "Student not found"}, 404
+
+        try:
+            # Calculate balance after the new payment
+            balance = self.calculate_balance(student, data["amount"])
+        except ValueError as e:
+            return {"message": str(e)}, 400
+
+        # Create the FeePayment record
+        fee_payment = FeePayment(
+            student_id=student.id,
+            amount=data["amount"],
+            payment_date=datetime.strptime(data["payment_date"], "%Y-%m-%d").date(),
+            term=data.get("term"),
+            year=data.get("year"),
+            method=data.get("method"),
+            balance=balance
+        )
+
+        db.session.add(fee_payment)
+        db.session.commit()
+
+        return {"fee_payment": fee_payment.serialize()}, 201
+
+    def put(self, fee_payment_id):
+        fee_payment = FeePayment.query.get(fee_payment_id)
+        if not fee_payment:
+            return {"message": "Fee payment not found"}, 404
+
+        data = request.get_json()
+        fee_payment.amount = data.get("amount", fee_payment.amount)
+        fee_payment.payment_date = datetime.strptime(
+            data.get("payment_date", fee_payment.payment_date.strftime("%Y-%m-%d")), "%Y-%m-%d"
+        )
+        fee_payment.term = data.get("term", fee_payment.term)
+        fee_payment.year = data.get("year", fee_payment.year)
+        fee_payment.method = data.get("method", fee_payment.method)
+
+        db.session.commit()
+
+        # Recalculate balance
+        student = fee_payment.student
+        try:
+            balance = self.calculate_balance(student, 0)  # No new payment, recalculate
+        except ValueError as e:
+            return {"message": str(e)}, 400
+
+        fee_payment.balance = balance
+        db.session.commit()
+
+        return {"message": "Fee payment updated", "fee_payment": fee_payment.serialize()}, 200
+
+    def delete(self, fee_payment_id):
+        fee_payment = FeePayment.query.get(fee_payment_id)
+        if not fee_payment:
+            return {"message": "Fee payment not found"}, 404
+
+        student_id = fee_payment.student_id
+        db.session.delete(fee_payment)
+        db.session.commit()
+
+        # Recalculate balance after deletion
+        student = Student.query.get(student_id)
+        try:
+            balance = self.calculate_balance(student, 0)  # No new payment, recalculate
+        except ValueError as e:
+            return {"message": str(e)}, 400
+
+        return {"message": "Fee payment deleted", "balance": balance}, 200
+
+
+api.add_resource(FeePaymentResource, "/fee-payment", "/fee-payment/<int:fee_payment_id>")
 
 if __name__ == '__main__':
     app.run(debug=True)
